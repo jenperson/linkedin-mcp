@@ -213,6 +213,137 @@ async function postToLinkedIn(accessToken: string, memberId: string, text: strin
   return location;
 }
 
+async function registerLinkedInImageUpload(
+  accessToken: string,
+  memberId: string
+): Promise<{ uploadUrl: string; assetUrn: string }> {
+  const response = await fetch(
+    'https://api.linkedin.com/v2/assets?action=registerUpload',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'X-Restli-Protocol-Version': '2.0.0'
+      },
+      body: JSON.stringify({
+        registerUploadRequest: {
+          recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
+          owner: `urn:li:person:${memberId}`,
+          serviceRelationships: [
+            {
+              relationshipType: 'OWNER',
+              identifier: 'urn:li:userGeneratedContent'
+            }
+          ]
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `LinkedIn image registration failed (${response.status}): ${await response.text()}`
+    );
+  }
+
+  const data = (await response.json()) as {
+    value: {
+      uploadMechanism: {
+        'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest': {
+          uploadUrl: string;
+        };
+      };
+      asset: string;
+    };
+  };
+
+  const uploadUrl =
+    data.value.uploadMechanism[
+      'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'
+    ].uploadUrl;
+  const assetUrn = data.value.asset;
+
+  return { uploadUrl, assetUrn };
+}
+
+async function uploadImageFromUrl(
+  uploadUrl: string,
+  imageUrl: string,
+  accessToken: string
+): Promise<void> {
+  const imageResponse = await fetch(imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(
+      `Failed to fetch image from URL (${imageResponse.status}): ${imageUrl}`
+    );
+  }
+
+  const contentType = imageResponse.headers.get('content-type') ?? 'image/jpeg';
+  const imageBuffer = await imageResponse.arrayBuffer();
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': contentType
+    },
+    body: imageBuffer
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(
+      `LinkedIn image upload failed (${uploadResponse.status}): ${await uploadResponse.text()}`
+    );
+  }
+}
+
+async function postImageToLinkedIn(
+  accessToken: string,
+  memberId: string,
+  text: string,
+  assetUrn: string,
+  imageTitle: string | undefined,
+  visibility: 'PUBLIC' | 'CONNECTIONS'
+): Promise<string> {
+  const response = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'X-Restli-Protocol-Version': '2.0.0'
+    },
+    body: JSON.stringify({
+      author: `urn:li:person:${memberId}`,
+      lifecycleState: 'PUBLISHED',
+      specificContent: {
+        'com.linkedin.ugc.ShareContent': {
+          shareCommentary: { text },
+          shareMediaCategory: 'IMAGE',
+          media: [
+            {
+              status: 'READY',
+              media: assetUrn,
+              ...(imageTitle ? { title: { text: imageTitle } } : {})
+            }
+          ]
+        }
+      },
+      visibility: {
+        'com.linkedin.ugc.MemberNetworkVisibility': visibility
+      }
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `LinkedIn image post failed (${response.status}): ${await response.text()}`
+    );
+  }
+
+  return response.headers.get('x-restli-id') ?? response.headers.get('location') ?? 'created';
+}
+
 function createServer(): McpServer {
   const server = new McpServer(
     { name: 'linkedin-publisher', version: '1.0.0' },
@@ -297,6 +428,67 @@ function createServer(): McpServer {
     }
   );
 
+  server.registerTool(
+    'linkedin_post_image',
+    {
+      description:
+        'Post a text update with an image to the connected LinkedIn member account. The image is fetched from a public URL and uploaded to LinkedIn.',
+      inputSchema: z.object({
+        text: z.string().min(1).max(3000).describe('Post text / commentary'),
+        imageUrl: z.string().url().describe('Publicly accessible URL of the image to attach'),
+        imageTitle: z.string().max(200).optional().describe('Optional title for the image'),
+        visibility: z.enum(['PUBLIC', 'CONNECTIONS']).default('PUBLIC')
+      })
+    },
+    async ({
+      text,
+      imageUrl,
+      imageTitle,
+      visibility
+    }: {
+      text: string;
+      imageUrl: string;
+      imageTitle?: string;
+      visibility: 'PUBLIC' | 'CONNECTIONS';
+    }): Promise<CallToolResult> => {
+      const record = await loadTokenRecord();
+      if (!isTokenStillValid(record)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `LinkedIn is not connected or the token expired. Open ${baseUrl}/auth/linkedin/start and reconnect before posting.`
+            }
+          ]
+        };
+      }
+
+      const { uploadUrl, assetUrn } = await registerLinkedInImageUpload(
+        record!.accessToken,
+        record!.memberId
+      );
+      await uploadImageFromUrl(uploadUrl, imageUrl, record!.accessToken);
+      const postId = await postImageToLinkedIn(
+        record!.accessToken,
+        record!.memberId,
+        text,
+        assetUrn,
+        imageTitle,
+        visibility
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Posted image to LinkedIn successfully. Result: ${postId}`
+          }
+        ]
+      };
+    }
+  );
+
   return server;
 }
 
@@ -335,6 +527,7 @@ async function renderStatusPage(response: Response): Promise<void> {
         <li><code>linkedin_connection_status</code></li>
         <li><code>linkedin_connect</code></li>
         <li><code>linkedin_post</code></li>
+        <li><code>linkedin_post_image</code></li>
       </ul>
     </div>
     <div class="card">
