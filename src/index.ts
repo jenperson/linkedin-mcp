@@ -30,6 +30,7 @@ const baseUrl = process.env.BASE_URL?.replace(/\/$/, '') ?? `http://localhost:${
 const tokenStorePath = process.env.LINKEDIN_TOKEN_STORE ?? '/data/linkedin-token.json';
 const linkedinClientId = process.env.LINKEDIN_CLIENT_ID;
 const linkedinClientSecret = process.env.LINKEDIN_CLIENT_SECRET;
+const apiKey = process.env.API_KEY;
 const linkedinRedirectUri = process.env.LINKEDIN_REDIRECT_URI ?? `${baseUrl}/auth/linkedin/callback`;
 const linkedinScopes = (process.env.LINKEDIN_SCOPES ?? 'r_liteprofile w_member_social')
   .split(/\s+/)
@@ -425,6 +426,21 @@ app.get('/.well-known/oauth-protected-resource/mcp', (_request, response) => {
 
 app.use('/mcp', async (request, response, next) => {
   if (request.method === 'GET' || request.method === 'DELETE' || request.method === 'POST') {
+    if (apiKey) {
+      const authHeader = request.header('Authorization');
+      const bearerMatch = authHeader?.match(/^Bearer\s+(.+)$/);
+      const token = bearerMatch?.[1];
+
+      if (!token || token !== apiKey) {
+        response.status(401).json({
+          jsonrpc: '2.0',
+          error: { code: -32_001, message: 'Unauthorized: invalid or missing API key' },
+          id: null
+        });
+        return;
+      }
+    }
+
     next();
     return;
   }

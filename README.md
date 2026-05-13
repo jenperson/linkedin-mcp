@@ -8,6 +8,7 @@ It uses LinkedIn's OAuth 2.0 authorization code flow. LinkedIn does not support 
 
 - Copy [.env.example](.env.example) as a starting point for local or deployment configuration.
 
+- `API_KEY` - (optional) Bearer token required for MCP requests. If set, all requests to `/mcp` must include `Authorization: Bearer <API_KEY>` header. Leave unset to allow unauthenticated access.
 - `LINKEDIN_CLIENT_ID` - LinkedIn app client id.
 - `LINKEDIN_CLIENT_SECRET` - LinkedIn app client secret.
 - `LINKEDIN_REDIRECT_URI` - absolute HTTPS callback URL registered in LinkedIn.
